@@ -7,6 +7,7 @@ export interface CatalogEntry {
   format: 'txt' | 'epub';
   encoding?: 'utf-8' | 'gb18030';
   version: string;
+  chunks?: string;
 }
 
 export type Block =
@@ -21,6 +22,7 @@ export interface Chapter {
 
 export interface Book {
   chapters: Chapter[];
+  chunked?: { groups: string[]; groupSize: number; loaded: Set<number> };
   title?: string;
   author?: string;
   /** Only vetted PNG / JPEG / GIF / WebP bytes; never external URLs or SVG. */

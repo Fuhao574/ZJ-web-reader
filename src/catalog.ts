@@ -33,8 +33,16 @@ export function parseCatalog(data: unknown, base: URL): CatalogEntry[] {
     }
     const url = bookURL(item.file as string, base);
     if (!url.pathname.toLowerCase().endsWith('.' + item.format)) throw new Error('书籍扩展名与格式不匹配');
+    if (item.chunks !== undefined && (typeof item.chunks !== 'string' || !/^books\/\.chunks\/[A-Za-z0-9_-]{1,80}\/manifest\.json$/.test(item.chunks))) throw new Error('分片清单路径无效');
     return item as unknown as CatalogEntry;
   });
+}
+
+export function chunkURL(path: string, base: URL): URL {
+  if (!/^books\/\.chunks\/[A-Za-z0-9_-]{1,80}\/manifest\.json$/.test(path)) throw new Error('分片路径无效');
+  const url = new URL(path, base);
+  if (url.origin !== base.origin || url.search || url.hash) throw new Error('分片必须来自本站');
+  return url;
 }
 
 /** Cancel downloads exceeding the limit, even without Content-Length. */

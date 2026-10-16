@@ -79,16 +79,30 @@ describe('reader lifecycle', () => {
     await ready();
     expect(visible('#reader-view')).toBe(true);
     expect(document.querySelector('#chapter-title')!.textContent).toBe('第一章 开始');
-    (document.querySelector('#next') as HTMLButtonElement).click(); await ready();
+    const next = document.querySelector('#next') as HTMLButtonElement;
+    next.focus(); vi.mocked(window.scrollTo).mockClear();
+    next.click();
+    // Release the bottom button and jump immediately, not only after async fonts.
+    expect(document.activeElement).toBe(document.querySelector('#chapter-title'));
+    expect(next.disabled).toBe(true);
+    expect(window.scrollTo).toHaveBeenCalledWith({ top: 0, left: 0, behavior: 'instant' });
+    await ready();
+    expect(next.disabled).toBe(false);
+    expect(window.scrollTo).toHaveBeenLastCalledWith({ top: 0, left: 0, behavior: 'instant' });
     expect(JSON.parse(localStorage.getItem(savedKey)!).chapter).toBe(1);
     (document.querySelector('#shelf-button') as HTMLButtonElement).click();
     expect(visible('#shelf-view')).toBe(true);
     const before = localStorage.getItem(savedKey);
     window.dispatchEvent(new Event('scroll')); window.dispatchEvent(new Event('pagehide'));
     expect(localStorage.getItem(savedKey)).toBe(before);
+    vi.mocked(window.scrollTo).mockClear();
     (document.querySelector('.book-card') as HTMLButtonElement).click(); await ready();
     expect(document.querySelector('#chapter-title')!.textContent).toBe('第二章 继续');
     expect(document.querySelector('#save-state')!.textContent).toContain('已恢复');
+    // Reopening a saved book restores its reading point; only new chapters force top=0.
+    const restored = JSON.parse(before!);
+    expect(JSON.parse(localStorage.getItem(savedKey)!).block).toBe(restored.block);
+    expect(JSON.parse(localStorage.getItem(savedKey)!).fraction).toBe(restored.fraction);
     expect(document.querySelectorAll('input[type=file]')).toHaveLength(1);
     expect((document.querySelector('#local-import') as HTMLElement).hidden).toBe(true);
     (document.querySelector('#next') as HTMLButtonElement).click();

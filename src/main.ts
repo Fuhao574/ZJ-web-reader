@@ -1,13 +1,13 @@
 import '@fontsource/inter/400.css';
 import '@fontsource/inter/600.css';
-import '@fontsource/noto-sans-sc/400.css';
-import '@fontsource/noto-sans-sc/600.css';
 import './styles.css';
-import { bookURL, MAX_BOOK_BYTES, MAX_CATALOG_BYTES, parseCatalog, readLimited } from './catalog';
+import { bookURL, chunkURL, MAX_BOOK_BYTES, MAX_CATALOG_BYTES, parseCatalog, readLimited } from './catalog';
 import { parseEpub } from './epub';
-import { chapterScrollPercent, percentOf, ProgressStore, type StorageLike } from './progress';
+import { chapterScrollPercent, percentOf, ProgressStore, validateProgress, type StorageLike } from './progress';
 import { parseTxt } from './txt';
 import { LocalLibrary, localEntry } from './local-library';
+import { jumpToReadingPosition, revealCurrentChapter } from './reading-navigation';
+import { HttpSyncTransport, makeSyncKey, SyncController, syncBookKey } from './sync';
 import type { Block, Book, CatalogEntry, Chapter, Progress } from './types';
 
 function $<T extends HTMLElement = HTMLElement>(selector: string): T {
@@ -20,7 +20,8 @@ const readerView = $('#reader-view');
 const messageView = $('#message-view');
 const tocDialog = $<HTMLDialogElement>('#toc-dialog');
 const appBase = new URL('./', document.baseURI);
-const store = new ProgressStore(((): StorageLike | null => { try { return window.localStorage; } catch { return null; } })());
+const storage = ((): StorageLike | null => { try { return window.localStorage; } catch { return null; } })();
+const store = new ProgressStore(storage);
 const localLibrary = new LocalLibrary();
 type Shelf = 'cloud' | 'local';
 type ReaderEntry = CatalogEntry & { source: Shelf };
@@ -50,6 +51,44 @@ let chapterImages: string[] = [];
 let trackedPoint: Progress | null = null;
 let scrollPending = false;
 let retryAction: () => void = () => void loadCatalog();
+let chunkBase: URL | null = null;
+let chunkGroups: string[] = [];
+let chunkGroupSize = 20;
+const chunkCache = new Map<number, Chapter[]>();
+const chunkRequests = new Map<number, Promise<Chapter[]>>();
+const sync = new SyncController(new HttpSyncTransport(new URL('api/index.php', appBase)), storage, {
+  status(message) { $('#sync-status').textContent = message; $('#sync-button').title = message; },
+  valid(point) { return !!book && !!validateProgress(point, current!.version, book.chapters); },
+  restore(point) {
+    if (!book || !current || readerView.hidden) return;
+    void renderChapter(point.chapter, point, true);
+  },
+  conflict(value) {
+    $('#sync-conflict').hidden = !value;
+    if (value) {
+      $('#conflict-detail').textContent = `本机：第 ${value.local.chapter + 1} 章 · ${value.local.percent}%；线上：第 ${value.remote.chapter + 1} 章 · ${value.remote.percent}%。请选择继续的位置，未选择前不会覆盖线上进度。`;
+      $<HTMLDialogElement>('#sync-dialog').close();
+    }
+  },
+});
+
+function syncContext() {
+  if (!current) return null;
+  const key = syncBookKey(current.format, current.version);
+  return key ? { book: key, version: current.version } : null;
+}
+async function startBookSync(local: Progress | null) {
+  const context = syncContext();
+  if (context && !readerView.hidden) await sync.start(context, local);
+}
+function renderSyncSettings() {
+  $('#sync-connected').hidden = !sync.connected;
+  $('#sync-disconnected').hidden = sync.connected;
+  $('#sync-button').textContent = sync.connected ? '已连接' : '同步';
+  $('#sync-key-output').hidden = true;
+  $<HTMLInputElement>('#sync-key-output').value = '';
+  $('#reveal-sync-key').textContent = '查看密钥';
+}
 
 function toast(message: string) {
   $('#toast').textContent = message;
@@ -65,6 +104,7 @@ function cancelPending() {
   restoring = true;
 }
 function releaseImages() { chapterImages.forEach(url => URL.revokeObjectURL(url)); chapterImages = []; }
+function clearChunkCache() { chunkBase = null; chunkGroups = []; chunkCache.clear(); chunkRequests.clear(); }
 function showMessage(title: string, detail: string, retry = false) {
   shelfView.hidden = true; readerView.hidden = true; messageView.hidden = false;
   $('#toc-button').hidden = true;
@@ -73,7 +113,7 @@ function showMessage(title: string, detail: string, retry = false) {
   $('#retry').hidden = !retry;
 }
 function showShelf() {
-  saveProgress(); cancelPending(); releaseImages();
+  saveProgress(); void sync.flush(); sync.detach(); cancelPending(); releaseImages();
   shelfView.hidden = false; readerView.hidden = true; messageView.hidden = true;
   $('#toc-button').hidden = true;
   $('#toolbar-book').textContent = '慢慢读，读到哪就记到哪。';
@@ -153,10 +193,11 @@ function renderChapterProgress() {
   $('#status-strip').style.width = `${percent}%`;
   $('#status-strip').title = `本章阅读进度 ${Math.round(percent)}%`;
 }
-function writePoint(point: Progress) {
+function writePoint(point: Progress, notifySync = true) {
   if (!current) return;
   trackedPoint = point;
   const saved = store.write(idFor(current), point);
+  if (notifySync) sync.update(point);
   $('#save-state').textContent = saved ? `已记住第 ${point.chapter + 1} 章的位置 · 仅当前浏览器` : '当前浏览器无法保存进度，请勿依赖刷新恢复';
   renderProgress(point);
 }
@@ -219,13 +260,19 @@ function renderBlock(block: Block): HTMLElement {
 const chapterTextLength = (chapter: Chapter) => chapter.blocks.reduce((count, block) => count + ('text' in block ? block.text.length : 0), 0);
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 
-async function renderChapter(index: number, saved: Progress | null) {
+async function renderChapter(index: number, saved: Progress | null, fromSync = false) {
   if (!book || !current) return;
   const token = ++generation;
   restoring = true; window.clearTimeout(saveTimer); releaseImages();
   trackedPoint = null; scrollPending = false;
   readerView.setAttribute('aria-busy', 'true');
+  // Release focus from the bottom navigation BEFORE changing the page height.
+  // The browser must not keep anchoring a focused Next button to the viewport.
+  $('#chapter-title').focus({ preventScroll: true });
+  $<HTMLButtonElement>('#prev').disabled = true;
+  $<HTMLButtonElement>('#next').disabled = true;
   chapterIndex = Math.max(0, Math.min(book.chapters.length - 1, index));
+  if (book.chunked) await loadChunkGroup(Math.floor(chapterIndex / book.chunked.groupSize));
   const chapter = book.chapters[chapterIndex];
   $('#chapter-title').textContent = chapter.title;
   $('#chapter-index').textContent = `${String(chapterIndex + 1).padStart(2, '0')} / ${String(book.chapters.length).padStart(2, '0')}`;
@@ -238,34 +285,81 @@ async function renderChapter(index: number, saved: Progress | null) {
   $('#book-detail').textContent = `${book.chapters.length} 章 · ${current.source === 'local' ? '本地书架' : '云端书架'} · ${current.format.toUpperCase()}`;
   $('#reader-note').textContent = (current.source === 'local' ? '这本书仅保存在当前浏览器，不上传服务器。' : '这本书来自云端书架。') + ' 阅读进度仅保存在当前浏览器，不跨设备同步；清理站点数据会清除进度。';
   $('#reading').replaceChildren(...chapter.blocks.map(renderBlock));
-  $<HTMLButtonElement>('#prev').disabled = chapterIndex === 0;
   const nextButton = $<HTMLButtonElement>('#next');
-  nextButton.disabled = false;
   nextButton.textContent = chapterIndex === book.chapters.length - 1 ? '读完了 ✓' : '下一章 →';
   renderToc();
   shelfView.hidden = true; readerView.hidden = false; messageView.hidden = true; $('#toc-button').hidden = false;
+  // A new chapter starts at the actual page top; do not leave it at the old
+  // bottom while waiting for fonts / layout. Saved positions are a separate path.
+  if (!saved) jumpToReadingPosition(0);
   // Font metrics must settle before restoring a paragraph offset. Pictures have fixed frames.
   await document.fonts?.ready;
   await frame(); await frame();
   if (token !== generation) return;
   const point = saved ?? makeProgress(chapterIndex, 0, 0);
   const element = $('#reading').children[point.block];
-  const toolbarHeight = $('.toolbar').offsetHeight;
-  const rect = element.getBoundingClientRect();
-  const target = saved ? window.scrollY + rect.top + point.fraction * rect.height - toolbarHeight - 18
-    : window.scrollY + $('.paper').getBoundingClientRect().top - toolbarHeight - 15;
-  window.scrollTo(0, Math.max(0, target));
   $('#chapter-title').focus({ preventScroll: true });
-  writePoint(point);
+  const position = () => {
+    const rect = element.getBoundingClientRect();
+    const target = saved ? window.scrollY + rect.top + point.fraction * rect.height - $('.toolbar').offsetHeight - 18 : 0;
+    jumpToReadingPosition(target);
+    revealCurrentChapter($('#side-toc'));
+  };
+  position();
+  await frame();
+  if (token !== generation) return;
+  // Reconcile once after the layout/focus scroll has been processed, before
+  // scroll events are allowed to write a new reading point.
+  position();
+  writePoint(point, !fromSync);
   if (saved && store.available) $('#save-state').textContent = `已恢复第 ${chapterIndex + 1} 章上次读到的位置`;
   await frame();
   if (token !== generation) return;
   restoring = false;
   readerView.setAttribute('aria-busy', 'false');
+  $<HTMLButtonElement>('#prev').disabled = chapterIndex === 0;
+  nextButton.disabled = false;
   document.title = `${current.title} · ${chapter.title} · 纸间`;
+  void preloadNextChunk(chapterIndex);
+}
+async function loadChunkedBook(entry: ReaderEntry): Promise<Book> {
+  if (!entry.chunks) throw new Error('云端书籍缺少分片清单');
+  const manifestURL = chunkURL(entry.chunks, appBase);
+  const response = await fetch(manifestURL, { cache: 'force-cache' });
+  const manifest = JSON.parse(new TextDecoder().decode(await readLimited(response, MAX_CATALOG_BYTES)));
+  if (manifest.version !== entry.version || !Array.isArray(manifest.groups) || !Array.isArray(manifest.chapters) || !Number.isInteger(manifest.groupSize) || manifest.groupSize < 1 || manifest.groupSize > 100 || manifest.chapters.length > 100000 || manifest.groups.length > 5000 || manifest.groups.some((name: unknown) => typeof name !== 'string' || !/^group-\d{4}\.json$/.test(name))) throw new Error('书籍分片清单无效');
+  clearChunkCache(); chunkBase = new URL('./', manifestURL); chunkGroups = manifest.groups;
+  const chapters = manifest.chapters.map((chapter: { title?: unknown }) => ({ title: typeof chapter.title === 'string' ? chapter.title : '未命名章节', blocks: [{ kind: 'paragraph' as const, text: '' }] }));
+  chunkGroupSize = manifest.groupSize;
+  const result: Book = { chapters, images: new Map(), warnings: [], chunked: { groups: manifest.groups, groupSize: manifest.groupSize, loaded: new Set() } };
+  return result;
+}
+async function loadChunkGroup(group: number): Promise<Chapter[]> {
+  const existing = chunkCache.get(group); if (existing) return existing;
+  const pending = chunkRequests.get(group); if (pending) return pending;
+  if (!chunkBase || !chunkGroups[group]) throw new Error('章节分片不存在');
+  const request = (async () => {
+    const url = new URL(chunkGroups[group], chunkBase);
+    const response = await fetch(url, { cache: 'force-cache' });
+    const json = JSON.parse(new TextDecoder().decode(await readLimited(response, 4 * 1024 * 1024)));
+    if (!Array.isArray(json.chapters)) throw new Error('章节分片格式无效');
+    const chapters = json.chapters as Chapter[]; chunkCache.set(group, chapters);
+    if (book?.chunked) {
+      const start = group * book.chunked.groupSize;
+      chapters.forEach((chapter, index) => { book!.chapters[start + index] = chapter; });
+      book.chunked.loaded.add(group);
+    }
+    return chapters;
+  })();
+  chunkRequests.set(group, request); try { return await request; } finally { chunkRequests.delete(group); }
+}
+async function preloadNextChunk(index: number): Promise<void> {
+  if (!book?.chunked || !chunkBase) return;
+  const next = Math.floor((index + 1) / chunkGroupSize);
+  if (next < chunkGroups.length) void loadChunkGroup(next).catch(() => {});
 }
 async function openBook(entry: ReaderEntry) {
-  saveProgress(); cancelPending();
+  saveProgress(); void sync.flush(); sync.detach(); cancelPending();
   readerView.setAttribute('aria-busy', 'true');
   const token = generation;
   showMessage('正在翻开这本书…', entry.title);
@@ -275,6 +369,11 @@ async function openBook(entry: ReaderEntry) {
     let parsed: Book;
     if (current?.id === entry.id && current.source === entry.source && current.version === entry.version && book) parsed = book;
     else {
+      if (entry.source === 'cloud' && entry.chunks) {
+        parsed = await loadChunkedBook(entry);
+        current = entry; book = parsed;
+        await loadChunkGroup(0);
+      } else {
       let bytes: Uint8Array;
       if (entry.source === 'local') {
         const record = await localLibrary.get(entry.id);
@@ -287,12 +386,14 @@ async function openBook(entry: ReaderEntry) {
         bytes = await readLimited(response, MAX_BOOK_BYTES);
       }
       parsed = entry.format === 'txt' ? parseTxt(bytes, entry.encoding ?? 'utf-8') : await parseEpub(bytes);
+      }
     }
     if (token !== generation) return;
     current = entry; book = parsed;
     const saved = store.read(idFor(entry), entry.version, parsed.chapters);
     window.clearTimeout(slowTimer);
     await renderChapter(saved?.chapter ?? 0, saved);
+    if (current === entry && !readerView.hidden) await startBookSync(saved);
   } catch (error) {
     if (token !== generation) return;
     retryAction = () => void openBook(entry);
@@ -392,9 +493,16 @@ window.addEventListener('scroll', () => {
     saveTimer = window.setTimeout(saveProgress, 350);
   });
 }, { passive: true });
-window.addEventListener('pagehide', saveProgress);
-window.addEventListener('resize', renderChapterProgress, { passive: true });
-document.addEventListener('visibilitychange', () => { if (document.hidden) saveProgress(); });
+window.addEventListener('pagehide', () => { saveProgress(); void sync.flush(); });
+window.addEventListener('resize', () => {
+  renderChapterProgress();
+  if (!readerView.hidden) revealCurrentChapter($('#side-toc'));
+}, { passive: true });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { saveProgress(); void sync.flush(); }
+  else if (!readerView.hidden) { saveProgress(); void sync.check(); }
+});
+window.addEventListener('online', () => void sync.check());
 $('#shelf-button').onclick = navigateShelf;
 $('#cloud-tab').onclick = () => { shelf = 'cloud'; navigateShelf(); };
 $('#local-tab').onclick = () => { shelf = 'local'; navigateShelf(); void refreshLocal(); };
@@ -406,7 +514,7 @@ $('#toc-button').onclick = () => {
   if (!book || restoring || readerView.hidden) return;
   $<HTMLInputElement>('#toc-search').value = ''; renderModalToc();
   tocDialog.showModal();
-  $('#modal-toc').querySelector<HTMLElement>('[aria-current]')?.scrollIntoView({ block: 'nearest' });
+  revealCurrentChapter($('#modal-toc'));
 };
 $('#toc-search').addEventListener('input', event => {
   if (!(event as InputEvent).isComposing) renderModalToc();
@@ -436,6 +544,56 @@ $('#reset-progress').onclick = () => {
   if (!store.clear(idFor(current))) toast('当前浏览器无法清除进度');
   void renderChapter(0, null);
 };
+const syncDialog = $<HTMLDialogElement>('#sync-dialog');
+$('#sync-button').onclick = () => { renderSyncSettings(); syncDialog.showModal(); };
+$('#close-sync').onclick = () => syncDialog.close();
+syncDialog.addEventListener('close', () => {
+  $<HTMLInputElement>('#sync-key-output').value = '';
+  $('#sync-key-output').hidden = true;
+  $<HTMLInputElement>('#sync-key-input').value = '';
+});
+async function connectSync(key: string, create: boolean) {
+  const controls = [...syncDialog.querySelectorAll<HTMLButtonElement>('button')];
+  controls.forEach(button => { button.disabled = true; });
+  try {
+    saveProgress(); await sync.connect(key, create); renderSyncSettings();
+    $<HTMLInputElement>('#sync-key-input').value = '';
+    $('#sync-status').textContent = create ? '同步密钥已创建，请复制并妥善备份' : '已连接同一份线上进度';
+    await startBookSync(current && book ? store.read(idFor(current), current.version, book.chapters) : null);
+  } catch (error) { $('#sync-status').textContent = errorMessage(error); }
+  finally { controls.forEach(button => { button.disabled = false; }); }
+}
+$('#create-sync').onclick = () => {
+  try { void connectSync(makeSyncKey(), true); }
+  catch { $('#sync-status').textContent = '此浏览器无法生成安全密钥，请使用 HTTPS 和新版浏览器'; }
+};
+$('#connect-sync-form').onsubmit = event => { event.preventDefault(); void connectSync($<HTMLInputElement>('#sync-key-input').value.trim().toLowerCase(), false); };
+$('#copy-sync-key').onclick = () => {
+  void Promise.resolve().then(() => navigator.clipboard.writeText(sync.credential)).then(() => toast('密钥已复制，请只在自己的设备间使用')).catch(() => {
+    const output = $<HTMLInputElement>('#sync-key-output'); output.value = sync.credential; output.hidden = false; output.select();
+    toast('浏览器不允许复制，请手动复制密钥');
+  });
+};
+$('#reveal-sync-key').onclick = () => {
+  const output = $<HTMLInputElement>('#sync-key-output'); output.hidden = !output.hidden;
+  output.value = output.hidden ? '' : sync.credential;
+  $('#reveal-sync-key').textContent = output.hidden ? '查看密钥' : '隐藏密钥';
+};
+$('#disconnect-sync').onclick = () => { saveProgress(); sync.disconnect(); renderSyncSettings(); };
+$('#erase-sync').onclick = () => {
+  if (!confirm('删除这份密钥关联的所有线上进度，并使密钥永久失效？本机书籍和本机进度不会删除。')) return;
+  void sync.erase().then(renderSyncSettings).catch(error => { $('#sync-status').textContent = errorMessage(error); });
+};
+$('#retry-sync').onclick = () => { saveProgress(); void sync.check(); };
+$('#keep-local').onclick = () => { saveProgress(); void sync.choose('local'); };
+$('#use-remote').onclick = () => void sync.choose('remote');
+try {
+  const key = storage?.getItem('paper-reader:sync-key');
+  if (key) void sync.resume(key).then(async () => {
+    renderSyncSettings();
+    if (current && book && !restoring) await startBookSync(store.read(idFor(current), current.version, book.chapters));
+  }).catch(() => { $('#sync-status').textContent = '自动连接失败，请在同步设置中重新连接或重试'; });
+} catch { /* local reading never depends on credentials storage */ }
 renderShelf();
 void refreshLocal().then(() => { if (shelf === 'local') route(); });
 void loadCatalog();

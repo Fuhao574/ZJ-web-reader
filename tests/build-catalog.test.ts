@@ -26,6 +26,7 @@ describe('automatic cloud catalog', () => {
     expect(first[0].title).toBe('书 #1');
     expect(first[0].file).toBe('books/%E5%B0%8F%E8%AF%B4/%E4%B9%A6%20%231.TXT');
     expect(first[0].encoding).toBe('utf-8');
+    expect(first[0].chunks).toMatch(/^books\/\.chunks\//);
     expect(await generateCatalog(root)).toEqual(first);
     await fs.writeFile(file, '第一章 开始\n新版正文');
     const next = await generateCatalog(root);

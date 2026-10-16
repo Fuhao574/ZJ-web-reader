@@ -6,6 +6,7 @@ import { unzipSync } from 'fflate';
 import { JSDOM } from 'jsdom';
 
 const LIMIT = 32 * 1024 * 1024;
+const GROUP_SIZE = 20;
 const sha = value => createHash('sha256').update(value).digest('hex');
 
 function epubMetadata(bytes) {
@@ -37,6 +38,49 @@ function epubMetadata(bytes) {
     const author = doc.getElementsByTagNameNS(dc, 'creator')[0]?.textContent?.trim();
     return { ...(title ? { title } : {}), ...(author ? { author } : {}) };
   } finally { opfDOM.window.close(); }
+}
+
+function cleanText(value) { return value.replace(/\s+/g, ' ').trim(); }
+function splitText(text) {
+  const heading = /^(?:第[零〇一二三四五六七八九十百千万两\d]+[章节回卷部篇].{0,45}|序章|序言|楔子|尾声|后记|番外.{0,35})$/;
+  const chapters = []; let current = { title: '正文', blocks: [] };
+  for (const raw of text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n')) {
+    const line = raw.trim(); if (!line) continue;
+    if (line.length <= 60 && heading.test(line)) { if (current.blocks.length) chapters.push(current); current = { title: line, blocks: [] }; continue; }
+    for (const chunk of line.match(/[\s\S]{1,2000}/g) ?? []) current.blocks.push({ kind: 'paragraph', text: chunk });
+  }
+  if (current.blocks.length) chapters.push(current);
+  return chapters.length ? chapters : [{ title: '正文', blocks: [{ kind: 'paragraph', text: cleanText(text) }] }];
+}
+function splitEpub(bytes) {
+  const files = unzipSync(bytes); const parse = b => new JSDOM(new TextDecoder().decode(b), { contentType: 'application/xml' });
+  const container = parse(files['META-INF/container.xml']).window.document;
+  const opfPath = container.querySelector('rootfile')?.getAttribute('full-path');
+  const opf = parse(files[opfPath]).window.document; const dir = opfPath.slice(0, opfPath.lastIndexOf('/') + 1);
+  const resolve = href => (dir + href.split('#')[0]).split('/').reduce((a,p) => p === '..' ? a.slice(0,-1) : p === '.' ? a : [...a,p], []).join('/');
+  const manifest = new Map([...opf.querySelectorAll('manifest > item')].map(item => [item.id, { path: resolve(item.getAttribute('href')), media: item.getAttribute('media-type') }]));
+  const chapters = [];
+  for (const ref of [...opf.querySelectorAll('spine > itemref')]) {
+    const item = manifest.get(ref.getAttribute('idref')); if (!item || !/xhtml|html/.test(item.media)) continue;
+    const doc = parse(files[item.path]).window.document; doc.querySelectorAll('script,style,svg,video,audio').forEach(n => n.remove());
+    const blocks = []; for (const node of [...(doc.querySelector('body') ?? doc.documentElement).children]) { const text = cleanText(node.textContent ?? ''); if (!text) continue; blocks.push({ kind: /^h[1-6]$/i.test(node.localName) ? 'heading' : 'paragraph', text }); }
+    if (blocks.length) chapters.push({ title: cleanText(doc.querySelector('h1,h2,title')?.textContent ?? `第 ${chapters.length + 1} 章`), blocks });
+  }
+  return chapters;
+}
+async function writeChunks(publicDir, entry, bytes) {
+  const id = entry.id.slice(6); const root = path.join(publicDir, 'books', '.chunks', id); await fs.rm(root, { recursive: true, force: true }); await fs.mkdir(root, { recursive: true });
+  const source = entry.format === 'txt' ? new TextDecoder(entry.encoding).decode(bytes) : null;
+  const chapters = source ? splitText(source) : splitEpub(bytes);
+  const groups = [];
+  for (let i = 0; i < chapters.length; i += GROUP_SIZE) {
+    const name = `group-${String(groups.length).padStart(4, '0')}.json`;
+    groups.push(name);
+    await fs.writeFile(path.join(root, name), JSON.stringify({ chapters: chapters.slice(i, i + GROUP_SIZE) }));
+  }
+  const manifest = { title: entry.title, author: entry.author, format: entry.format, version: entry.version, groupSize: GROUP_SIZE, groups, chapters: chapters.map((c, i) => ({ title: c.title, group: Math.floor(i / GROUP_SIZE), index: i % GROUP_SIZE })) };
+  await fs.writeFile(path.join(root, 'manifest.json'), JSON.stringify(manifest));
+  entry.chunks = `books/.chunks/${id}/manifest.json`;
 }
 
 /** Deterministic, recursive discovery. File contents version progress; paths identify editions. */
@@ -73,6 +117,7 @@ export async function generateCatalog(publicDir) {
           catch { throw new Error(`${relative} 不是可识别的 UTF-8 / GB18030 文本`); }
         }
       }
+      await writeChunks(publicDir, entry, bytes);
       if (!entry.title || entry.title.length > 500 || entry.file.length > 500 || (entry.author?.length ?? 0) > 2000) throw new Error(`${relative} 的书名、作者或文件路径过长`);
       entries.push(entry);
       if (entries.length > 2000) throw new Error('云端书架最多支持 2000 本');

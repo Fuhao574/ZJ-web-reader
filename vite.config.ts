@@ -6,6 +6,7 @@ const publicDir = fileURLToPath(new URL('./public/', import.meta.url));
 
 export default defineConfig({
   base: './',
+  server: { fs: { deny: ['.env', '.env.*', '**/*.{crt,pem}', '**/.git/**', '**/reader-private/**', '**/server/**'] } },
   plugins: [{
     name: 'cloud-bookshelf',
     async buildStart() { await generateCatalog(publicDir); },

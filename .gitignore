@@ -13,3 +13,7 @@ test-results/
 public/catalog.json
 public/catalog.json.tmp
 *.zip
+# Database credentials stay outside both the static root and the repository.
+/reader-private/
+/server/config.local.php
+*.log

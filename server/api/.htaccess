@@ -1,0 +1,7 @@
+Options -Indexes
+<IfModule mod_setenvif.c>
+  SetEnvIfNoCase Authorization "^(.*)$" HTTP_AUTHORIZATION=$1
+</IfModule>
+<Files "contract.php">
+  Require all denied
+</Files>

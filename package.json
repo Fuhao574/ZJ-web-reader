@@ -10,7 +10,8 @@
     "dev": "vite --host 127.0.0.1 --port 5180 --strictPort",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "build": "npm run typecheck && npm test && vite build",
+    "build": "npm run typecheck && npm test && vite build && node scripts/package-server.mjs",
+    "test:php": "php server/tests/contract-test.php",
     "preview": "vite preview --host 127.0.0.1 --port 4180 --strictPort",
     "catalog:generate": "node scripts/build-catalog.mjs",
     "samples": "node scripts/create-samples.mjs"

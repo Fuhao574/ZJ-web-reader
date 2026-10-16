@@ -17,11 +17,17 @@
         <div class="toolbar-actions">
           <button class="btn" id="shelf-button" type="button">书架</button>
           <button class="btn" id="toc-button" type="button" hidden>目录</button>
+          <button class="btn" id="sync-button" type="button">同步</button>
         </div>
       </div>
       <div class="status-strip" id="status-strip" aria-hidden="true"></div>
     </header>
     <main id="main" tabindex="-1">
+      <section class="sync-conflict" id="sync-conflict" aria-labelledby="conflict-title" hidden>
+        <strong id="conflict-title">另一设备有不同的阅读位置</strong>
+        <p id="conflict-detail"></p>
+        <div class="dialog-actions"><button class="btn" id="keep-local" type="button">保留本机位置</button><button class="btn" id="use-remote" type="button">继续线上位置</button></div>
+      </section>
       <section id="shelf-view" class="shelf-view" aria-labelledby="shelf-title">
         <div class="shelf-heading"><div class="kicker">BETWEEN THE PAGES</div><h1 id="shelf-title">书在这里，慢慢读。</h1><p>选一本，接着上次的位置读。</p></div>
         <div class="shelf-controls">
@@ -61,6 +67,26 @@
       </form>
       <p id="toc-search-status" class="toc-search-status" role="status" aria-live="polite"></p>
       <nav class="toc" id="modal-toc" aria-label="章节目录"></nav>
+    </dialog>
+    <dialog id="sync-dialog" aria-labelledby="sync-title">
+      <div class="dialog-head"><h2 id="sync-title">阅读进度同步</h2><button class="btn icon-only" id="close-sync" type="button" aria-label="关闭同步设置">×</button></div>
+      <p>用同一密钥连接其他设备。只同步阅读位置，不上传本地书籍；另一设备仍需添加同一份本地文件。</p>
+      <p id="sync-status" class="sync-status" role="status" aria-live="polite">未开启同步 · 进度仍保存在本机</p>
+      <div id="sync-disconnected">
+        <button class="btn" id="create-sync" type="button">创建同步密钥</button>
+        <form id="connect-sync-form" class="connect-sync-form">
+          <label for="sync-key-input">已有密钥，在这台设备连接</label>
+          <input id="sync-key-input" type="password" maxlength="64" autocomplete="off" spellcheck="false" placeholder="输入 64 位同步密钥" required>
+          <button class="btn" type="submit">连接</button>
+        </form>
+      </div>
+      <div id="sync-connected" hidden>
+        <div class="dialog-actions"><button class="btn" id="copy-sync-key" type="button">复制密钥</button><button class="btn" id="reveal-sync-key" type="button">查看密钥</button><button class="btn" id="retry-sync" type="button">立即同步</button></div>
+        <input id="sync-key-output" class="sync-key-output" type="text" readonly aria-label="同步密钥" hidden>
+        <p>密钥相当于密码，持有它就能读写你的进度。请自行妥善备份，不要公开分享；遗失后无法找回。</p>
+        <div class="dialog-actions"><button class="text-button" id="disconnect-sync" type="button">断开本机连接</button><button class="text-button danger" id="erase-sync" type="button">删除所有线上进度并作废密钥</button></div>
+      </div>
+      <p>密钥记在当前浏览器。清理站点数据会断开连接，但不会删除服务端记录。</p>
     </dialog>
     <div class="toast" id="toast" role="status" hidden></div>
     <input id="local-files" type="file" accept=".txt,.epub,text/plain,application/epub+zip" multiple hidden>
