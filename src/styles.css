@@ -24,4 +24,11 @@ html { scroll-behavior:auto; }
 .side-card h2 { font-size:14px; font-weight:600; margin:0 0 14px; color:#4c5061; }
 .side-note { margin:0; }
 .reading > :last-child { margin-bottom:0; }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.toc-search { display:flex; align-items:center; gap:8px; margin:0; }
+.toc-search input { min-width:0; width:100%; min-height:44px; padding:10px 12px; border:1px solid #dfd9e9; border-radius:7px; background:#fffefa; color:var(--text); font:16px var(--ui); }
+.toc-search input::placeholder { color:#94909e; }
+.toc-search input:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.toc-search .btn { flex:none; min-height:44px; }
+dialog .toc-search-status { margin:10px 0 12px; color:#858096; font-size:11px; line-height:1.8; }
 @media(prefers-reduced-motion:reduce) { *,*:before,*:after { scroll-behavior:auto!important; transition:none!important; } }

@@ -12,6 +12,9 @@ describe('reader lifecycle', () => {
     localStorage.clear(); history.replaceState(null, '', '/');
     vi.stubGlobal('scrollTo', vi.fn());
     vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => setTimeout(() => fn(0), 0));
+    HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+    HTMLDialogElement.prototype.close = function () { this.open = false; };
+    HTMLElement.prototype.scrollIntoView = vi.fn();
     vi.stubGlobal('fetch', vi.fn(async (url: URL) => {
       const text = String(url).includes('catalog.json')
         ? JSON.stringify([{ id: 'test', title: '测试书', file: 'books/test.txt', format: 'txt', version: '1' }])
@@ -20,6 +23,35 @@ describe('reader lifecycle', () => {
     }));
     await import('../src/main');
     await vi.waitFor(() => expect(document.querySelector('.book-card')).not.toBeNull());
+  });
+  it('searches chapter titles in the modal only, clears results and preserves the original chapter target', async () => {
+    (document.querySelector('.book-card') as HTMLButtonElement).click(); await ready();
+    (document.querySelector('#toc-button') as HTMLButtonElement).click();
+    const input = document.querySelector('#toc-search') as HTMLInputElement;
+    const search = (value: string) => { input.value = value; input.dispatchEvent(new Event('input', { bubbles: true })); };
+    expect(document.querySelectorAll('#modal-toc button')).toHaveLength(2);
+    search('  开始  ');
+    expect(document.querySelectorAll('#modal-toc button')).toHaveLength(1);
+    expect(document.querySelector('#modal-toc')!.textContent).toContain('第一章 开始');
+    expect(document.querySelectorAll('#side-toc button')).toHaveLength(2);
+    expect(document.querySelector('#toc-search-status')!.textContent).toContain('1');
+    search('不存在的章节');
+    expect(document.querySelectorAll('#modal-toc button')).toHaveLength(0);
+    expect(document.querySelector('#toc-search-status')!.textContent).toContain('没有找到');
+    (document.querySelector('#toc-search-clear') as HTMLButtonElement).click();
+    expect(input.value).toBe('');
+    expect(document.querySelectorAll('#modal-toc button')).toHaveLength(2);
+    search('开始');
+    (document.querySelector('#modal-toc button') as HTMLButtonElement).click(); await ready();
+    expect((document.querySelector('#toc-dialog') as HTMLDialogElement).open).toBe(false);
+    expect(document.querySelector('#chapter-title')!.textContent).toBe('第一章 开始');
+    expect(JSON.parse(localStorage.getItem(savedKey)!).chapter).toBe(0);
+    (document.querySelector('#toc-button') as HTMLButtonElement).click();
+    expect(input.value).toBe('');
+    expect(document.querySelectorAll('#modal-toc button')).toHaveLength(2);
+    (document.querySelector('#close-toc') as HTMLButtonElement).click();
+    (document.querySelector('#shelf-button') as HTMLButtonElement).click();
+    localStorage.removeItem(savedKey);
   });
   it('opens a server book, saves chapter changes, and does not corrupt progress on shelf scroll', async () => {
     const visible = (id: string) => !(document.querySelector(id) as HTMLElement).hidden;

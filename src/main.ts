@@ -162,15 +162,31 @@ function goChapter(index: number) {
   saveProgress(); void renderChapter(index, null);
 }
 function renderToc() {
-  for (const selector of ['#side-toc', '#modal-toc']) {
-    const nav = $(selector); nav.replaceChildren();
-    book!.chapters.forEach((chapter, index) => {
-      const button = document.createElement('button'); button.type = 'button'; button.textContent = chapter.title;
-      if (index === chapterIndex) button.setAttribute('aria-current', 'true');
-      button.onclick = () => { tocDialog.close(); goChapter(index); };
-      nav.append(button);
-    });
-  }
+  const nav = $('#side-toc'); nav.replaceChildren();
+  book!.chapters.forEach((chapter, index) => nav.append(chapterButton(chapter, index)));
+  $<HTMLInputElement>('#toc-search').value = '';
+  renderModalToc();
+}
+function chapterButton(chapter: Chapter, index: number) {
+  const button = document.createElement('button'); button.type = 'button'; button.textContent = chapter.title;
+  if (index === chapterIndex) button.setAttribute('aria-current', 'true');
+  button.onclick = () => { tocDialog.close(); goChapter(index); };
+  return button;
+}
+function renderModalToc() {
+  const input = $<HTMLInputElement>('#toc-search');
+  const query = input.value.trim().toLocaleLowerCase();
+  const nav = $('#modal-toc'); const fragment = document.createDocumentFragment();
+  let matches = 0;
+  book?.chapters.forEach((chapter, index) => {
+    if (query && !chapter.title.toLocaleLowerCase().includes(query)) return;
+    fragment.append(chapterButton(chapter, index)); matches++;
+  });
+  nav.replaceChildren(fragment); nav.scrollTop = 0;
+  $('#toc-search-clear').hidden = input.value.length === 0;
+  $('#toc-search-status').textContent = query
+    ? (matches ? `找到 ${matches} 个章节` : '没有找到匹配的章节，换个关键词试试。')
+    : `共 ${book?.chapters.length ?? 0} 个章节`;
 }
 function renderBlock(block: Block): HTMLElement {
   if (block.kind === 'image') {
@@ -372,7 +388,20 @@ $('#cloud-retry').onclick = () => void loadCatalog();
 $('#local-import').onclick = () => $<HTMLInputElement>('#local-files').click();
 $('#local-files').onchange = () => void importLocal([...($<HTMLInputElement>('#local-files').files ?? [])]);
 $('#brand').onclick = event => { event.preventDefault(); navigateShelf(); };
-$('#toc-button').onclick = () => { tocDialog.showModal(); tocDialog.querySelector<HTMLElement>('[aria-current]')?.scrollIntoView({ block: 'nearest' }); };
+$('#toc-button').onclick = () => {
+  if (!book || restoring || readerView.hidden) return;
+  $<HTMLInputElement>('#toc-search').value = ''; renderModalToc();
+  tocDialog.showModal();
+  $('#modal-toc').querySelector<HTMLElement>('[aria-current]')?.scrollIntoView({ block: 'nearest' });
+};
+$('#toc-search').addEventListener('input', event => {
+  if (!(event as InputEvent).isComposing) renderModalToc();
+});
+$('#toc-search').addEventListener('compositionend', renderModalToc);
+$('#toc-search-form').onsubmit = event => { event.preventDefault(); };
+$('#toc-search-clear').onclick = () => {
+  $<HTMLInputElement>('#toc-search').value = ''; renderModalToc(); $('#toc-search').focus();
+};
 $('#close-toc').onclick = () => tocDialog.close();
 tocDialog.onclick = event => {
   if (event.target !== tocDialog) return;

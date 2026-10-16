@@ -52,7 +52,16 @@
       </section>
       <section id="message-view" class="message-view" role="status" aria-live="polite" hidden><h1 id="message-title"></h1><p id="message-detail"></p><button class="btn" id="retry" type="button" hidden>重新加载</button></section>
     </main>
-    <dialog id="toc-dialog" aria-labelledby="toc-title"><div class="dialog-head"><h2 id="toc-title">章节目录</h2><button class="btn icon-only" id="close-toc" type="button" aria-label="关闭目录">×</button></div><nav class="toc" id="modal-toc" aria-label="章节目录"></nav></dialog>
+    <dialog id="toc-dialog" aria-labelledby="toc-title">
+      <div class="dialog-head"><h2 id="toc-title">章节目录</h2><button class="btn icon-only" id="close-toc" type="button" aria-label="关闭目录">×</button></div>
+      <form class="toc-search" id="toc-search-form" role="search">
+        <label class="sr-only" for="toc-search">搜索章节标题</label>
+        <input id="toc-search" type="search" placeholder="搜索章节标题…" autocomplete="off" aria-controls="modal-toc" aria-describedby="toc-search-status">
+        <button class="btn" id="toc-search-clear" type="button" hidden>清空</button>
+      </form>
+      <p id="toc-search-status" class="toc-search-status" role="status" aria-live="polite"></p>
+      <nav class="toc" id="modal-toc" aria-label="章节目录"></nav>
+    </dialog>
     <div class="toast" id="toast" role="status" hidden></div>
     <input id="local-files" type="file" accept=".txt,.epub,text/plain,application/epub+zip" multiple hidden>
     <noscript><p>请开启 JavaScript 后阅读。书架与进度保存在浏览器中，不需要登录。</p></noscript>
