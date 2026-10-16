@@ -1,9 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { percentOf, ProgressStore, validateProgress } from '../src/progress';
+import { chapterScrollPercent, percentOf, ProgressStore, validateProgress } from '../src/progress';
 import type { Chapter } from '../src/types';
 
 const chapters: Chapter[] = [{ title: '一', blocks: [{ kind: 'paragraph', text: 'a' }, { kind: 'paragraph', text: 'b' }] }, { title: '二', blocks: [{ kind: 'paragraph', text: 'c' }] }];
 describe('progress', () => {
+  it('tracks chapter scrolling continuously even when whole-book progress rounds to zero', () => {
+    expect(chapterScrollPercent(82, 1600, 67, 800)).toBe(0);
+    const middle = chapterScrollPercent(-318, 1200, 67, 800);
+    expect(middle).toBe(50);
+    expect(chapterScrollPercent(-718, 800, 67, 800)).toBe(100);
+    expect(chapterScrollPercent(-918, 600, 67, 800)).toBe(100);
+    expect(chapterScrollPercent(182, 1700, 67, 800)).toBe(0);
+  });
+  it('finishes a short chapter already fully visible and responds to viewport changes', () => {
+    expect(chapterScrollPercent(82, 600, 67, 800)).toBe(100);
+    expect(chapterScrollPercent(82, 600, 67, 400)).toBe(0);
+  });
   it('weights progress by blocks and validates bounds', () => {
     expect(percentOf(chapters, 0, 1, 0)).toBe(33);
     expect(percentOf(chapters, 1, 0, 0)).toBe(67);

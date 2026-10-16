@@ -5,7 +5,7 @@ import '@fontsource/noto-sans-sc/600.css';
 import './styles.css';
 import { bookURL, MAX_BOOK_BYTES, MAX_CATALOG_BYTES, parseCatalog, readLimited } from './catalog';
 import { parseEpub } from './epub';
-import { percentOf, ProgressStore, type StorageLike } from './progress';
+import { chapterScrollPercent, percentOf, ProgressStore, type StorageLike } from './progress';
 import { parseTxt } from './txt';
 import { LocalLibrary, localEntry } from './local-library';
 import type { Block, Book, CatalogEntry, Chapter, Progress } from './types';
@@ -136,9 +136,22 @@ function currentPoint(): Progress {
 }
 function renderProgress(point: Progress) {
   $('#book-progress').style.width = `${point.percent}%`;
-  $('#status-strip').style.width = `${point.percent}%`;
+  renderChapterProgress();
   $('#progress-label').textContent = `${point.percent}%`;
   $('#chapter-label').textContent = `第 ${point.chapter + 1} 章`;
+}
+function renderChapterProgress() {
+  if (readerView.hidden || !book) return;
+  const reading = $('#reading');
+  const lastBlock = reading.lastElementChild;
+  const percent = chapterScrollPercent(
+    $('.paper').getBoundingClientRect().top,
+    (lastBlock ?? reading).getBoundingClientRect().bottom,
+    $('.toolbar').getBoundingClientRect().bottom,
+    window.innerHeight,
+  );
+  $('#status-strip').style.width = `${percent}%`;
+  $('#status-strip').title = `本章阅读进度 ${Math.round(percent)}%`;
 }
 function writePoint(point: Progress) {
   if (!current) return;
@@ -380,6 +393,7 @@ window.addEventListener('scroll', () => {
   });
 }, { passive: true });
 window.addEventListener('pagehide', saveProgress);
+window.addEventListener('resize', renderChapterProgress, { passive: true });
 document.addEventListener('visibilitychange', () => { if (document.hidden) saveProgress(); });
 $('#shelf-button').onclick = navigateShelf;
 $('#cloud-tab').onclick = () => { shelf = 'cloud'; navigateShelf(); };

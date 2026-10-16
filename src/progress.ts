@@ -45,3 +45,13 @@ export function percentOf(chapters: Chapter[], chapter: number, block: number, f
   const before = chapters.slice(0, chapter).reduce((n, c) => n + c.blocks.length, 0);
   return total ? Math.max(0, Math.min(100, Math.round((before + block + fraction) / total * 100))) : 0;
 }
+
+/** Current chapter scroll range. Excludes the sidebar and whitespace below it.
+ * Starts with the paper below the toolbar and ends when the final text is visible.
+ */
+export function chapterScrollPercent(paperTop: number, contentBottom: number, toolbarBottom: number, viewportHeight: number): number {
+  const start = toolbarBottom + 15;
+  const range = contentBottom - paperTop - (viewportHeight - start);
+  if (range <= 0) return contentBottom <= viewportHeight ? 100 : 0;
+  return Math.max(0, Math.min(100, (start - paperTop) / range * 100));
+}
