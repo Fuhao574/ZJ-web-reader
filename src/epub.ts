@@ -1,8 +1,10 @@
 import { unzip } from 'fflate';
 import type { Block, Book, Chapter } from './types';
 
-const MAX_ENTRIES = 2000;
+const MAX_ARCHIVE_ENTRIES = 20000;
+const MAX_ENTRIES = 10000;
 const MAX_UNCOMPRESSED = 96 * 1024 * 1024;
+const MAX_ENTRY_BYTES = 16 * 1024 * 1024;
 const imageMime: Record<string, string> = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' };
 
 function safePath(path: string): string {
@@ -67,7 +69,7 @@ function blocksFromXhtml(bytes: Uint8Array, path: string, images: Map<string, { 
 }
 
 export async function parseEpub(bytes: Uint8Array): Promise<Book> {
-  let declaredSize = 0, entries = 0;
+  let declaredSize = 0, entries = 0, archiveEntries = 0;
   // Check central-directory sizes before decompression, not after allocating a zip bomb.
   const files = await new Promise<Record<string, Uint8Array>>((resolve, reject) => {
     let rejected = false;
@@ -76,11 +78,22 @@ export async function parseEpub(bytes: Uint8Array): Promise<Book> {
         if (rejected) return false;
         try { if (entry.name.endsWith('/')) safePath(entry.name.slice(0, -1)); else safePath(entry.name); }
         catch (error) { rejected = true; reject(error); return false; }
-        entries++; declaredSize += entry.originalSize;
-        if (entries > MAX_ENTRIES || entry.originalSize > 16 * 1024 * 1024 || declaredSize > MAX_UNCOMPRESSED) {
-          rejected = true; reject(new Error('EPUB 解压后的文件数量或大小超出限制')); return false;
+        archiveEntries++;
+        let reason = '';
+        if (archiveEntries > MAX_ARCHIVE_ENTRIES) reason = `EPUB 压缩包条目超过 ${MAX_ARCHIVE_ENTRIES} 个`;
+        // Skipped fonts, CSS and media are never inflated; do not charge their sizes
+        // against the memory budget for the files this reader actually loads.
+        const selected = !entry.name.endsWith('/') && /\.(?:xml|opf|ncx|xhtml|html|htm|png|jpe?g|gif|webp)$/i.test(entry.name);
+        if (selected) {
+          entries++; declaredSize += entry.originalSize;
+          if (entries > MAX_ENTRIES) reason = `EPUB 可读取文件超过 ${MAX_ENTRIES} 个`;
+          else if (entry.originalSize > MAX_ENTRY_BYTES) reason = `EPUB 单个文件超过 16MiB：${entry.name}`;
+          else if (declaredSize > MAX_UNCOMPRESSED) reason = 'EPUB 可读取内容解压后超过 96MiB';
         }
-        return !entry.name.endsWith('/') && /\.(?:xml|opf|ncx|xhtml|html|htm|png|jpe?g|gif|webp)$/i.test(entry.name);
+        if (reason) {
+          rejected = true; reject(new Error(reason)); return false;
+        }
+        return selected;
       } }, (error, data) => {
         if (!rejected) { if (error) reject(new Error('EPUB 压缩包无法打开')); else resolve(data); }
       });
@@ -89,7 +102,12 @@ export async function parseEpub(bytes: Uint8Array): Promise<Book> {
   const names = Object.keys(files);
   if (!names.length || names.length > MAX_ENTRIES) throw new Error('EPUB 文件数量超出限制');
   let uncompressed = 0;
-  for (const name of names) { safePath(name); uncompressed += files[name].byteLength; if (uncompressed > MAX_UNCOMPRESSED) throw new Error('EPUB 解压后超过大小限制'); }
+  for (const name of names) {
+    safePath(name);
+    uncompressed += files[name].byteLength;
+    if (files[name].byteLength > MAX_ENTRY_BYTES) throw new Error(`EPUB 单个文件超过 16MiB：${name}`);
+    if (uncompressed > MAX_UNCOMPRESSED) throw new Error('EPUB 可读取内容解压后超过 96MiB');
+  }
   const container = files['META-INF/container.xml'];
   if (!container) throw new Error('EPUB 缺少 META-INF/container.xml');
   const rootfile = xml(container, 'container').querySelector('rootfile');

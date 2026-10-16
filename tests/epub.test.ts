@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { zipSync, strToU8 } from 'fflate';
+import { zipSync, strToU8, unzipSync } from 'fflate';
 import { parseEpub, resolveEpubPath } from '../src/epub';
 
 function fixture(body = '<h1>第一章 开始</h1><p>真正的正文</p>', options: { ncx?: boolean; invalidSpine?: boolean } = {}) {
@@ -40,7 +40,31 @@ describe('EPUB', () => {
     for (let i = 0; i < bytes.length - 46; i++) {
       if (view.getUint32(i, true) === 0x02014b50) { view.setUint32(i + 24, 17 * 1024 * 1024, true); break; }
     }
-    await expect(parseEpub(bytes)).rejects.toThrow('大小超出限制');
+    await expect(parseEpub(bytes)).rejects.toThrow('单个文件超过 16MiB');
+  });
+  it('accepts long novels with more than 2000 chapter files', async () => {
+    const files = unzipSync(fixture());
+    for (let i = 0; i < 2300; i++) files[`EPUB/Text/extra-${i}.xhtml`] = strToU8('<html/>');
+    const book = await parseEpub(zipSync(files));
+    expect(book.chapters[0].title).toBe('目录中的名字');
+  });
+  it('does not count skipped fonts against decompression size limits', async () => {
+    const files = unzipSync(fixture());
+    files['EPUB/Fonts/unused.ttf'] = strToU8('unused');
+    const bytes = zipSync(files);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const decoder = new TextDecoder();
+    for (let i = 0; i < bytes.length - 46; i++) {
+      if (view.getUint32(i, true) !== 0x02014b50) continue;
+      const length = view.getUint16(i + 28, true);
+      if (decoder.decode(bytes.subarray(i + 46, i + 46 + length)).endsWith('.ttf')) view.setUint32(i + 24, 100 * 1024 * 1024, true);
+    }
+    expect((await parseEpub(bytes)).chapters).toHaveLength(1);
+  });
+  it('still rejects excessive readable entry counts before decompression', async () => {
+    const files: Record<string, Uint8Array> = {};
+    for (let i = 0; i < 10001; i++) files[`c${i}.xhtml`] = new Uint8Array();
+    await expect(parseEpub(zipSync(files))).rejects.toThrow('可读取文件超过 10000 个');
   });
   it('removes duplicated chapter heading and blocks XML entities', async () => {
     const book = await parseEpub(fixture('<h1>目录中的名字</h1><p>正文</p>'));
