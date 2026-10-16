@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.vite/
+coverage/
+test-results/
+.env
+.env.*
+!.env.example
+.DS_Store
+# 所有书籍均留在本机，包括示例书；只提交阅读器代码。
+/books/
+/public/books/
+public/catalog.json
+public/catalog.json.tmp
+*.zip
